@@ -1,0 +1,11 @@
+# Python 暫存檔
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit 暫存
+.streamlit/
+
+# 作業系統產生的隱藏檔
+.DS_Store
+Thumbs.db
