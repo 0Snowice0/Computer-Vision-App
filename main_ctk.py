@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import os
 
-from cv_algorithms import enhance, frequency, spatial, feature, morphology, object_analysis
+from cv_algorithms import enhance, frequency, spatial, feature, morphology, object_analysis, geometry
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -223,6 +223,11 @@ class PipelineApp(ctk.CTk):
         self.force_gray_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(self.toggle_sidebar, text="強制灰階模式", variable=self.force_gray_var, command=self.run_pipeline).pack(pady=10, padx=10, anchor="w")
 
+        tool_frame = ctk.CTkFrame(self.toggle_sidebar, fg_color="transparent")
+        tool_frame.pack(fill="x", padx=10, pady=5)
+        ctk.CTkButton(tool_frame, text="📌 框選四點轉正", command=self.tool_perspective, fg_color="#8E44AD", hover_color="#9B59B6", height=30).pack(fill="x", pady=(0, 5))
+        ctk.CTkButton(tool_frame, text="🔗 SIFT 影像對齊", command=self.tool_sift_align, fg_color="#2980B9", hover_color="#3498DB", height=30).pack(fill="x")
+
         self.param_sidebar = ctk.CTkScrollableFrame(self, width=350, fg_color="#2D2D2D", label_text="🎛️ 參數調整", label_font=ctk.CTkFont(size=18, weight="bold"), label_text_color="#5DADE2")
         self.param_sidebar.grid(row=0, column=1, rowspan=2, sticky="nsew") 
         
@@ -294,8 +299,8 @@ class PipelineApp(ctk.CTk):
                 ("邊界抽取", [("Iter_Bnd", "迭代次數", 1, 10, 1, 1)]),
                 ("形態學梯度", [("Iter_Grad", "迭代次數", 1, 10, 1, 1)]),
                 "空洞填補",       
-                ("Top-Hat", [("Iter_TH", "迭代次數", 1, 10, 1, 1)]),
-                ("Black-Hat", [("Iter_BH", "迭代次數", 1, 10, 1, 1)]),
+                ("Top-Hat", [("Iter_TH", "迭代次數", 1, 10, 1, 1), ("SE_Size_TH", "結構元素大小", 3, 99, 45, 2)]),
+                ("Black-Hat", [("Iter_BH", "迭代次數", 1, 10, 1, 1), ("SE_Size_BH", "結構元素大小", 3, 99, 45, 2)]),
                 "Hit-or-Miss",  
                 "交替連續濾波 (ASF)" 
             ]),
@@ -461,12 +466,22 @@ class PipelineApp(ctk.CTk):
                 elif step == "Canny 邊緣偵測": img = feature.apply_canny(img, int(v['Can_t1']), int(v['Can_t2']))
                 elif step == "霍氏直線偵測": img = feature.apply_hough_transform(img, True, int(v['H_l_t']), int(v['H_l_len']), int(v['H_l_gap']), False, 30, 0, 0, 20)
                 elif step == "霍氏圓形偵測": img = feature.apply_hough_transform(img, False, 80, 50, 10, True, int(v['H_c_p2']), int(v['H_minR']), int(v['H_maxR']), int(v['H_minD']))
-                elif step in ["膨脹", "侵蝕", "Opening", "Closing", "Hit-or-Miss", "邊界抽取", "形態學梯度", "空洞填補", "Top-Hat", "Black-Hat", "交替連續濾波 (ASF)"]: 
+                # 1. 專屬於 Top-Hat 與 Black-Hat (使用動態巨大的圓形 SE)
+                elif step in ["Top-Hat", "Black-Hat"]:
+                    iters = int(v[f"Iter_{'TH' if step=='Top-Hat' else 'BH'}"])
+                    se_size = int(v[f"SE_Size_{'TH' if step=='Top-Hat' else 'BH'}"])
+                    
+                    # 動態生成巨大的圓形結構元素 (對應投影片的 Disk)
+                    big_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (se_size, se_size))
+                    
+                    img = morphology.apply_advanced_morphology(img, step, big_kernel, iters)
+
+                # 2. 其他一般的形態學 (繼續使用原本的自訂小 SE 面板)
+                elif step in ["膨脹", "侵蝕", "Opening", "Closing", "Hit-or-Miss", "邊界抽取", "形態學梯度", "空洞填補", "交替連續濾波 (ASF)"]: 
                     iter_dict = {
                         "膨脹": "Iter_Dil", "侵蝕": "Iter_Ero", 
                         "Opening": "Iter_Opn", "Closing": "Iter_Cls",
-                        "邊界抽取": "Iter_Bnd", "形態學梯度": "Iter_Grad",
-                        "Top-Hat": "Iter_TH", "Black-Hat": "Iter_BH"
+                        "邊界抽取": "Iter_Bnd", "形態學梯度": "Iter_Grad"
                     }
                     iters = int(v[iter_dict[step]]) if step in iter_dict else 1
                     img = morphology.apply_advanced_morphology(img, step, self.current_se_matrix, iters)
@@ -536,5 +551,55 @@ class PipelineApp(ctk.CTk):
         self.pipeline_text_label.configure(text="( 空白 )")
         self.run_pipeline()
 
+    def tool_perspective(self):
+        """執行四點透視轉正工具"""
+        if self.cv_img_rgb is None:
+            return
+        
+        # 呼叫 geometry，並將回傳的轉正影像「覆蓋」掉原始影像
+        warped_img = geometry.interactive_perspective_transform(self.cv_img_rgb)
+        
+        # 確保有正常回傳圖片 (沒有按 X 取消)
+        if warped_img is not None: 
+            self.cv_img_rgb = warped_img
+            self.run_pipeline() # 重新跑一次流水線，主畫面就會立刻更新
+
+    def tool_sift_align(self):
+        """執行 SIFT 影像對齊，並無縫支援並排與滑動雙模式"""
+        if self.cv_img_rgb is None: 
+            return
+            
+        # 1. 取得標準目標圖 (左) 與 扭曲後的待測圖 (右)
+        target_img, warped_img = geometry.align_images_sift(self.cv_img_rgb)
+        
+        if target_img is not None:
+            from PIL import Image
+            
+            # --- 【UI 顯示更新：並排模式】 ---
+            pil_tgt = Image.fromarray(target_img)
+            pil_wrp = Image.fromarray(warped_img)
+            ctk_tgt = ctk.CTkImage(light_image=pil_tgt, size=(400, 400))
+            ctk_wrp = ctk.CTkImage(light_image=pil_wrp, size=(400, 400))
+
+            self.lbl_before.configure(image=ctk_tgt)
+            self.lbl_after.configure(image=ctk_wrp)
+            
+            # --- 🚀 【底層資料更新：打通滑動對比功能】 🚀 ---
+            # 把這兩張圖存進底層變數，餵給滑動功能！
+            self.current_before_rgb = target_img.copy()
+            self.current_after_rgb = warped_img.copy()
+            
+            # 如果目前 UI 正好停在「滑動對比」分頁，就立刻觸發畫面更新
+            if self.view_mode_var.get() == "滑動對比 (Swipe)":
+                self.update_swipe_view()
+            # -----------------------------------------------
+            
+            # 更新系統底圖
+            self.cv_img_rgb = warped_img
+            
+            print("✅ [系統提示] SIFT 對齊已成功！(完美支援滑動無鬼影對比)")
+            
+        else:
+            print("⚠️ 對齊失敗或已取消，UI 不做更動")
 if __name__ == "__main__":
     PipelineApp().mainloop()
