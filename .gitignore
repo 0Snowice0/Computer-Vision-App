@@ -9,3 +9,10 @@ __pycache__/
 # 作業系統產生的隱藏檔
 .DS_Store
 Thumbs.db
+
+# 忽略 PyInstaller 產生的打包資料夾
+build/
+dist/
+
+# 忽略 PyInstaller 的設定檔
+*.spec
